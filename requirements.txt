@@ -1,0 +1,5 @@
+Flask==2.3.3
+google-cloud-aiplatform==1.49.0
+sqlalchemy==2.0.25
+pg8000==1.30.3
+cloud-sql-python-connector==1.5.0
