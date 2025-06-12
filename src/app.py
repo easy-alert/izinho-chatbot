@@ -122,57 +122,69 @@ def health_check():
 @app.route("/chat", methods=["POST"])
 def chat_handler():
     data = request.get_json()
-
-    if not data or "question" not in data or "user_id" not in data:
+    if (
+        not data
+        or "question" not in data
+        or "user_id" not in data
+        or "company_id" not in data
+    ):
         return jsonify(
-            {"error": "Parâmetros 'question' e 'user_id' são obrigatórios."}
+            {
+                "error": "Parâmetros 'question', 'user_id' e 'company_id' são obrigatórios."
+            }
         ), 400
 
-    user_question = data["question"] if "question" in data else None
-    user_id = data["user_id"] if "user_id" in data else None
-    company_id = data["company_id"] if "company_id" in data else None
+    user_question = data["question"]
+    user_id = data["user_id"]
+    company_id = data["company_id"]
 
     try:
+        print("DEBUG: Iniciando o manipulador de chat.")
         # 1. Gerar a Query SQL com a IA
         prompt_sql = PROMPT_TEMPLATE_SQL.format(
-            company_id=company_id, user_id=user_id, question=user_question
+            user_id=user_id, company_id=company_id, question=user_question
         )
+
+        print("DEBUG: Prompt SQL formatado. Chamando a IA para gerar a query...")
         response_sql = model.generate_content([Part.from_text(prompt_sql)])
         sql_query = response_sql.text.strip()
-
-        print(f"Query gerada pela IA: '{sql_query}'")
+        print(f"DEBUG: Query gerada pela IA: '{sql_query}'")
 
         if not sql_query:
-            # Você pode pedir para a IA responder de forma amigável
+            print(
+                "DEBUG: A IA retornou uma query vazia. Respondendo de forma amigável."
+            )
             return jsonify(
-                {"answer": "Olá! Como posso ajudar com os dados da sua empresa?"}
+                {
+                    "answer": f"Olá! Não consegui gerar uma busca para a sua pergunta: '{user_question}'. Como posso ajudar com os dados de seus prédios?"
+                }
             )
 
-        # 2. **VALIDAÇÃO DE SEGURANÇA SIMPLES**
         if not sql_query.upper().startswith("SELECT"):
-            raise ValueError("Query insegura detectada. Apenas SELECT é permitido.")
-        if user_id not in sql_query:
             raise ValueError(
-                "Falha na regra de segurança: user_id não encontrado na query."
+                f"Query insegura detectada (não inicia com SELECT): {sql_query}"
             )
 
-        # 3. Executar a Query no Banco de Dados
+        # 2. Executar a Query no Banco de Dados
+        print("DEBUG: Executando a query no banco de dados...")
         with db_pool.connect() as conn:
             result = conn.execute(sqlalchemy.text(sql_query))
-            db_result = [
-                row._asdict() for row in result
-            ]  # Converte o resultado para um formato amigável
+            db_result = [row._asdict() for row in result]
+        print(f"DEBUG: Resultado do banco de dados: {db_result}")
 
-        # 4. Gerar a Resposta Final com a IA
+        # 3. Gerar a Resposta Final com a IA
         prompt_response = PROMPT_TEMPLATE_RESPONSE.format(
             question=user_question, db_result=str(db_result)
         )
+        print("DEBUG: Chamando a IA para formatar a resposta final...")
         response_final = model.generate_content([Part.from_text(prompt_response)])
 
+        print("DEBUG: Processo concluído com sucesso.")
         return jsonify({"answer": response_final.text.strip()})
 
     except Exception as e:
-        print(f"Erro: {e}")
+        # ESTE é o print que precisamos ver nos logs
+        print(f"ERRO CRÍTICO no manipulador de chat: {e}")
         return jsonify(
             {
                 "error": "Desculpe, não consegui processar sua pergunta. Tente reformulá-la."
