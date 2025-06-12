@@ -5,6 +5,7 @@ import vertexai
 from vertexai.generative_models import GenerativeModel, Part
 import sqlalchemy
 from google.cloud.sql.connector import Connector
+import re
 
 # --- CONFIGURAÇÃO LIDA DO AMBIENTE ---
 app = Flask(__name__)
@@ -142,21 +143,31 @@ def chat_handler():
 
         logging.debug("Prompt SQL formatado. Chamando a IA para gerar a query...")
         response_sql = model.generate_content([Part.from_text(prompt_sql)])
-        sql_query = response_sql.text.strip()
-        logging.info(f"Query gerada pela IA: '{sql_query}'")
+
+        raw_response = response_sql.text
+        logging.info(f"Resposta bruta da IA: '{raw_response}'")
+
+        # Tenta extrair a query de dentro de um bloco de código Markdown
+        match = re.search(r"```(sql)?(.*)```", raw_response, re.DOTALL | re.IGNORECASE)
+        if match:
+            sql_query = match.group(2).strip()
+        else:
+            # Se não houver Markdown, assume que a resposta inteira é a query
+            sql_query = raw_response.strip()
+
+        logging.info(f"Query extraída e limpa: '{sql_query}'")
 
         if not sql_query:
-            logging.warning("A IA retornou uma query vazia.")
-
+            logging.warning("A IA retornou uma query vazia após a limpeza.")
             return jsonify(
                 {
-                    "answer": f"Olá! Não consegui gerar uma busca para a sua pergunta: '{user_question}'. Como posso ajudar com os dados de seus prédios?"
+                    "answer": "Desculpe, não consegui formular uma busca com sua pergunta."
                 }
             )
 
         if not sql_query.upper().startswith("SELECT"):
             raise ValueError(
-                f"Query insegura detectada (não inicia com SELECT): {sql_query}"
+                f"Query insegura ou mal formada detectada após a limpeza: {sql_query}"
             )
 
         # 2. Executar a Query no Banco de Dados
