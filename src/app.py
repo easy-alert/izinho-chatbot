@@ -22,6 +22,7 @@ DB_NAME = os.environ.get("DB_NAME")
 # --- INICIALIZAÇÃO DA CONEXÃO ---
 connector = Connector()
 
+
 def getconn():
     conn = connector.connect(
         INSTANCE_CONNECTION_NAME,
@@ -32,10 +33,25 @@ def getconn():
     )
     return conn
 
+
 db_pool = sqlalchemy.create_engine(
     "postgresql+pg8000://",
     creator=getconn,
 )
+
+
+# --- TESTE DE CONEXÃO NA INICIALIZAÇÃO ---
+print("Realizando teste de conexão inicial com o banco de dados...")
+try:
+    with db_pool.connect() as conn:
+        conn.execute(sqlalchemy.text("SELECT 1"))
+    print("CONEXÃO COM O BANCO DE DADOS BEM-SUCEDIDA NA INICIALIZAÇÃO.")
+except Exception as e:
+    print(f"FALHA FATAL NA CONEXÃO COM O BANCO NA INICIALIZAÇÃO: {e}")
+    # Opcional: Você pode querer que a aplicação pare aqui se o banco não estiver acessível.
+    # Em um ambiente serverless como o Cloud Run, logar o erro já é suficiente
+    # para que o container seja marcado como "não-saudável".
+
 
 # --- PROMPT PARA A IA ---
 # Este prompt é a parte mais importante para guiar a IA
@@ -66,44 +82,103 @@ Resposta para o usuário:
 """
 
 # --- MODELO DE IA ---
-model = GenerativeModel("gemini-1.5-flash-001") # Usamos o Gemini 1.5 Flash (rápido e econômico)
+model = GenerativeModel(
+    "gemini-1.5-flash-001"
+)  # Usamos o Gemini 1.5 Flash (rápido e econômico)
 
-@app.route('/chat', methods=['POST'])
+
+@app.route("/health", methods=["GET"])
+def health_check():
+    """
+    Este endpoint verifica a conectividade com o banco de dados.
+    """
+    try:
+        # Pega uma conexão do pool. Se isso falhar, o bloco 'except' será acionado.
+        conn = db_pool.connect()
+
+        # Executa uma query extremamente simples que sempre funciona.
+        conn.execute(sqlalchemy.text("SELECT 1"))
+
+        # Fecha a conexão para devolvê-la ao pool.
+        conn.close()
+
+        # Se chegamos até aqui, a conexão foi bem-sucedida.
+        print("Health check: Conexão com o banco de dados bem-sucedida!")
+        return jsonify({"status": "ok", "database_connection": "successful"}), 200
+
+    except Exception as e:
+        # Se qualquer passo acima falhar, capturamos o erro específico.
+        error_message = (
+            f"Health check: FALHA na conexão com o banco de dados. Erro: {e}"
+        )
+        print(error_message)
+
+        # Retornamos um erro 500 para indicar que o serviço não está saudável.
+        return jsonify(
+            {"status": "error", "database_connection": "failed", "details": str(e)}
+        ), 500
+
+
+@app.route("/chat", methods=["POST"])
 def chat_handler():
     data = request.get_json()
-    if not data or 'question' not in data or 'user_id' not in data:
-        return jsonify({"error": "Parâmetros 'question' e 'user_id' são obrigatórios."}), 400
 
-    user_question = data['question']
-    user_id = data['user_id']
+    if not data or "question" not in data or "user_id" not in data:
+        return jsonify(
+            {"error": "Parâmetros 'question' e 'user_id' são obrigatórios."}
+        ), 400
+
+    user_question = data["question"] if "question" in data else None
+    user_id = data["user_id"] if "user_id" in data else None
+    company_id = data["company_id"] if "company_id" in data else None
 
     try:
         # 1. Gerar a Query SQL com a IA
-        prompt_sql = PROMPT_TEMPLATE_SQL.format(user_id=user_id, question=user_question)
+        prompt_sql = PROMPT_TEMPLATE_SQL.format(
+            company_id=company_id, user_id=user_id, question=user_question
+        )
         response_sql = model.generate_content([Part.from_text(prompt_sql)])
         sql_query = response_sql.text.strip()
+
+        print(f"Query gerada pela IA: '{sql_query}'")
+
+        if not sql_query:
+            # Você pode pedir para a IA responder de forma amigável
+            return jsonify(
+                {"answer": "Olá! Como posso ajudar com os dados da sua empresa?"}
+            )
 
         # 2. **VALIDAÇÃO DE SEGURANÇA SIMPLES**
         if not sql_query.upper().startswith("SELECT"):
             raise ValueError("Query insegura detectada. Apenas SELECT é permitido.")
         if user_id not in sql_query:
-             raise ValueError("Falha na regra de segurança: user_id não encontrado na query.")
-
+            raise ValueError(
+                "Falha na regra de segurança: user_id não encontrado na query."
+            )
 
         # 3. Executar a Query no Banco de Dados
         with db_pool.connect() as conn:
             result = conn.execute(sqlalchemy.text(sql_query))
-            db_result = [row._asdict() for row in result] # Converte o resultado para um formato amigável
+            db_result = [
+                row._asdict() for row in result
+            ]  # Converte o resultado para um formato amigável
 
         # 4. Gerar a Resposta Final com a IA
-        prompt_response = PROMPT_TEMPLATE_RESPONSE.format(question=user_question, db_result=str(db_result))
+        prompt_response = PROMPT_TEMPLATE_RESPONSE.format(
+            question=user_question, db_result=str(db_result)
+        )
         response_final = model.generate_content([Part.from_text(prompt_response)])
 
         return jsonify({"answer": response_final.text.strip()})
 
     except Exception as e:
         print(f"Erro: {e}")
-        return jsonify({"error": "Desculpe, não consegui processar sua pergunta. Tente reformulá-la."}), 500
+        return jsonify(
+            {
+                "error": "Desculpe, não consegui processar sua pergunta. Tente reformulá-la."
+            }
+        ), 500
 
-if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
+
+if __name__ == "__main__":
+    app.run(debug=True, host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
