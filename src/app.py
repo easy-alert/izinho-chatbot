@@ -1,3 +1,10 @@
+import os
+from flask import Flask, request, jsonify
+import vertexai
+from vertexai.generative_models import GenerativeModel, Part
+import sqlalchemy
+from google.cloud.sql.connector import Connector
+
 # --- CONFIGURAÇÃO LIDA DO AMBIENTE ---
 app = Flask(__name__)
 
