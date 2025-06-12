@@ -18,6 +18,7 @@ logging.basicConfig(
 # GCP
 PROJECT_ID = os.environ.get("GCP_PROJECT_ID")
 LOCATION = os.environ.get("GCP_REGION")
+AI_MODEL = os.environ.get("AI_MODEL", "gemini-2.0-flash-001")
 vertexai.init(project=PROJECT_ID, location=LOCATION)
 
 # Cloud SQL
@@ -76,9 +77,7 @@ Resposta para o usuário:
 """
 
 # --- MODELO DE IA ---
-model = GenerativeModel(
-    "gemini-1.5-flash-001"
-)  # Usamos o Gemini 1.5 Flash (rápido e econômico)
+model = GenerativeModel(AI_MODEL)
 
 
 @app.route("/health", methods=["GET"])
