@@ -1,4 +1,5 @@
 import os
+import logging
 from flask import Flask, request, jsonify
 import vertexai
 from vertexai.generative_models import GenerativeModel, Part
@@ -7,6 +8,12 @@ from google.cloud.sql.connector import Connector
 
 # --- CONFIGURAÇÃO LIDA DO AMBIENTE ---
 app = Flask(__name__)
+
+# --- CONFIGURAÇÃO DE LOGGING ---
+# Configura o logger para imprimir no console. Cloud Run irá capturar isso.
+logging.basicConfig(
+    level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s"
+)
 
 # GCP
 PROJECT_ID = os.environ.get("GCP_PROJECT_ID")
@@ -38,19 +45,6 @@ db_pool = sqlalchemy.create_engine(
     "postgresql+pg8000://",
     creator=getconn,
 )
-
-
-# --- TESTE DE CONEXÃO NA INICIALIZAÇÃO ---
-print("Realizando teste de conexão inicial com o banco de dados...")
-try:
-    with db_pool.connect() as conn:
-        conn.execute(sqlalchemy.text("SELECT 1"))
-    print("CONEXÃO COM O BANCO DE DADOS BEM-SUCEDIDA NA INICIALIZAÇÃO.")
-except Exception as e:
-    print(f"FALHA FATAL NA CONEXÃO COM O BANCO NA INICIALIZAÇÃO: {e}")
-    # Opcional: Você pode querer que a aplicação pare aqui se o banco não estiver acessível.
-    # Em um ambiente serverless como o Cloud Run, logar o erro já é suficiente
-    # para que o container seja marcado como "não-saudável".
 
 
 # --- PROMPT PARA A IA ---
@@ -103,7 +97,6 @@ def health_check():
         conn.close()
 
         # Se chegamos até aqui, a conexão foi bem-sucedida.
-        print("Health check: Conexão com o banco de dados bem-sucedida!")
         return jsonify({"status": "ok", "database_connection": "successful"}), 200
 
     except Exception as e:
@@ -111,7 +104,8 @@ def health_check():
         error_message = (
             f"Health check: FALHA na conexão com o banco de dados. Erro: {e}"
         )
-        print(error_message)
+
+        logging.error(f"ERRO CRÍTICO : {error_message}", exc_info=True)
 
         # Retornamos um erro 500 para indicar que o serviço não está saudável.
         return jsonify(
@@ -139,21 +133,20 @@ def chat_handler():
     company_id = data["company_id"]
 
     try:
-        print("DEBUG: Iniciando o manipulador de chat.")
+        logging.info("Iniciando o manipulador de chat.")
         # 1. Gerar a Query SQL com a IA
         prompt_sql = PROMPT_TEMPLATE_SQL.format(
             user_id=user_id, company_id=company_id, question=user_question
         )
 
-        print("DEBUG: Prompt SQL formatado. Chamando a IA para gerar a query...")
+        logging.debug("Prompt SQL formatado. Chamando a IA para gerar a query...")
         response_sql = model.generate_content([Part.from_text(prompt_sql)])
         sql_query = response_sql.text.strip()
-        print(f"DEBUG: Query gerada pela IA: '{sql_query}'")
+        logging.info(f"Query gerada pela IA: '{sql_query}'")
 
         if not sql_query:
-            print(
-                "DEBUG: A IA retornou uma query vazia. Respondendo de forma amigável."
-            )
+            logging.warning("A IA retornou uma query vazia.")
+
             return jsonify(
                 {
                     "answer": f"Olá! Não consegui gerar uma busca para a sua pergunta: '{user_question}'. Como posso ajudar com os dados de seus prédios?"
@@ -166,25 +159,27 @@ def chat_handler():
             )
 
         # 2. Executar a Query no Banco de Dados
-        print("DEBUG: Executando a query no banco de dados...")
+        logging.info("Executando a query no banco de dados...")
+
         with db_pool.connect() as conn:
             result = conn.execute(sqlalchemy.text(sql_query))
             db_result = [row._asdict() for row in result]
-        print(f"DEBUG: Resultado do banco de dados: {db_result}")
+
+        logging.debug(f"Resultado do banco de dados: {db_result}")
 
         # 3. Gerar a Resposta Final com a IA
+        logging.info("Chamando a IA para formatar a resposta final...")
         prompt_response = PROMPT_TEMPLATE_RESPONSE.format(
             question=user_question, db_result=str(db_result)
         )
-        print("DEBUG: Chamando a IA para formatar a resposta final...")
         response_final = model.generate_content([Part.from_text(prompt_response)])
 
-        print("DEBUG: Processo concluído com sucesso.")
+        logging.info("Processo concluído com sucesso.")
         return jsonify({"answer": response_final.text.strip()})
 
     except Exception as e:
-        # ESTE é o print que precisamos ver nos logs
-        print(f"ERRO CRÍTICO no manipulador de chat: {e}")
+        logging.error(f"ERRO CRÍTICO no manipulador de chat: {e}", exc_info=True)
+
         return jsonify(
             {
                 "error": "Desculpe, não consegui processar sua pergunta. Tente reformulá-la."
