@@ -1,11 +1,12 @@
 import os
 import logging
-from flask import Flask, request, jsonify
-import vertexai
-from vertexai.generative_models import GenerativeModel, Part
-import sqlalchemy
-from google.cloud.sql.connector import Connector
 import re
+import sqlalchemy
+import vertexai
+from flask import Flask, request, jsonify
+from google.cloud.sql.connector import Connector
+from vertexai.generative_models import GenerativeModel, Part
+from cachetools import cached, TTLCache
 
 # --- CONFIGURAÇÃO LIDA DO AMBIENTE ---
 app = Flask(__name__)
@@ -32,21 +33,53 @@ DB_NAME = os.environ.get("DB_NAME")
 connector = Connector()
 
 
+@cached(cache=TTLCache(maxsize=1, ttl=600))  # <-- MÁGICA DO CACHE AQUI!
+def get_dynamic_schema():
+    """
+    Conecta ao banco, busca o esquema das tabelas e formata para o prompt.
+    O resultado é cacheado por 600 segundos (10 minutos) para evitar sobrecarga.
+    """
+    logging.info("Buscando esquema do banco de dados (chamada não cacheada)...")
+    schema_description = ""
+
+    try:
+        with db_pool.connect() as conn:
+            # Query que busca tabelas e colunas do schema 'public'
+            query = sqlalchemy.text("""
+                SELECT table_name, column_name, data_type 
+                FROM information_schema.columns 
+                WHERE table_schema = 'public' 
+                ORDER BY table_name, ordinal_position;
+            """)
+            result = conn.execute(query)
+
+            # Formata o resultado para o prompt
+            current_table = ""
+            for row in result:
+                row_dict = row._asdict()
+                if row_dict["table_name"] != current_table:
+                    current_table = row_dict["table_name"]
+                    schema_description += f"\n- Tabela `{current_table}` com colunas:"
+                schema_description += (
+                    f' "{row_dict["column_name"]}" ({row_dict["data_type"]}),'
+                )
+
+            logging.info("Esquema gerado com sucesso.")
+            return schema_description
+
+    except Exception as e:
+        logging.error(f"Falha ao gerar o esquema dinâmico do banco: {e}")
+        return "Erro ao obter esquema do banco."
+
+
 def getconn():
     conn = connector.connect(
-        INSTANCE_CONNECTION_NAME,
-        "pg8000",
-        user=DB_USER,
-        password=DB_PASS,
-        db=DB_NAME,
+        INSTANCE_CONNECTION_NAME, "pg8000", user=DB_USER, password=DB_PASS, db=DB_NAME
     )
     return conn
 
 
-db_pool = sqlalchemy.create_engine(
-    "postgresql+pg8000://",
-    creator=getconn,
-)
+db_pool = sqlalchemy.create_engine("postgresql+pg8000://", creator=getconn)
 
 
 # --- PROMPT PARA A IA ---
@@ -57,12 +90,12 @@ Sua tarefa é gerar uma query SQL a partir da pergunta de um usuário, seguindo 
 Gere APENAS a query SQL, sem nenhuma palavra ou explicação.
 
 Contexto e Regras:
-1.  **Regra de Sintaxe PostgreSQL CRÍTICA**: Todos os nomes de tabelas e colunas que contêm letras maiúsculas (camelCase) DEVEM ser colocados entre aspas duplas. Exemplo: a coluna `companyId` deve ser escrita como `"companyId"`.
-2.  **Esquema do Banco de Dados**:
-    - Tabela `buildings` com as colunas: "id" (TEXT), "buildingTypeId" (TEXT), "companyId" (TEXT), "name" (TEXT), "city" (TEXT), "state" (TEXT), "streetName" (TEXT), etc.
-    - Tabela `users` com as colunas: "id" (TEXT), "name" (TEXT), "email" (TEXT), "role" (TEXT), "companyId" (TEXT), etc.
-3.  **Regra de Segurança**: As queries DEVEM ser filtradas pelo `companyId` ou  `userId` fornecido para garantir que o usuário só veja dados da sua empresa ou relacionado a ele. Use sempre a cláusula `WHERE "companyId" = '{company_id}'` ou `WHERE "userId" = '{user_id}'`.
-4.  **Exemplo de Query Correta**: `SELECT COUNT(*) FROM buildings WHERE buildings."companyId" = 'some-company-id';`
+1.  **Regra de Sintaxe PostgreSQL CRÍTICA**: Todos os nomes de tabelas e colunas que contêm letras maiúsculas (camelCase) DEVEM ser colocados entre aspas duplas. Exemplo: `"companyId"`.
+2.  **Esquema do Banco de Dados**: {db_schema}
+3.  **Relações Importantes (Exemplo, adicione as suas)**:
+    - Se precisar cruzar dados de prédios com tarefas, use `JOIN buildings ON tasks."buildingId" = buildings.id`.
+4.  **Regra de Segurança**: As queries DEVEM ser filtradas pelo `companyId` ou  `userId` fornecido para garantir que o usuário só veja dados da sua empresa ou relacionado a ele. Use sempre a cláusula `WHERE "companyId" = '{company_id}'` ou `WHERE "userId" = '{user_id}'`.
+5.  **Exemplo de Query Correta**: `SELECT COUNT(*) FROM buildings WHERE buildings."companyId" = 'some-company-id';`
 
 Pergunta do Usuário: "{question}"
 ID da Empresa para o filtro: '{company_id}'
@@ -136,9 +169,16 @@ def chat_handler():
 
     try:
         logging.info("Iniciando o manipulador de chat.")
-        # 1. Gerar a Query SQL com a IA
+
+        # 1. Pega o schema do banco (do cache ou buscando novamente)
+        db_schema = get_dynamic_schema()
+
+        # 2. Formata o prompt SQL com o schema dinâmico
         prompt_sql = PROMPT_TEMPLATE_SQL.format(
-            user_id=user_id, company_id=company_id, question=user_question
+            db_schema=db_schema,  # <-- Injeta o schema aqui
+            company_id=company_id,
+            user_id=user_id,
+            question=user_question,
         )
 
         logging.debug("Prompt SQL formatado. Chamando a IA para gerar a query...")
@@ -147,7 +187,7 @@ def chat_handler():
         raw_response = response_sql.text
         logging.info(f"Resposta bruta da IA: '{raw_response}'")
 
-        # Tenta extrair a query de dentro de um bloco de código Markdown
+        # 3. Tenta extrair a query de dentro de um bloco de código Markdown
         match = re.search(r"```(sql)?(.*)```", raw_response, re.DOTALL | re.IGNORECASE)
         if match:
             sql_query = match.group(2).strip()
@@ -170,7 +210,7 @@ def chat_handler():
                 f"Query insegura ou mal formada detectada após a limpeza: {sql_query}"
             )
 
-        # 2. Executar a Query no Banco de Dados
+        # 4. Executar a Query no Banco de Dados
         logging.info("Executando a query no banco de dados...")
 
         with db_pool.connect() as conn:
@@ -179,7 +219,7 @@ def chat_handler():
 
         logging.debug(f"Resultado do banco de dados: {db_result}")
 
-        # 3. Gerar a Resposta Final com a IA
+        # 5. Gerar a Resposta Final com a IA
         logging.info("Chamando a IA para formatar a resposta final...")
         prompt_response = PROMPT_TEMPLATE_RESPONSE.format(
             question=user_question, db_result=str(db_result)
