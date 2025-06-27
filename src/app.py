@@ -161,7 +161,7 @@ def chat_handler():
 
     if not all(k in data for k in ["question", "user_id", "company_id"]):
          return jsonify({"error": "Parâmetros obrigatórios ausentes."}), 400
-
+    
     user_question = data["question"]
     user_id = data["user_id"]
     company_id = data["company_id"]
@@ -197,26 +197,34 @@ def chat_handler():
 
         # 4. Tenta extrair a query de dentro de um bloco de código Markdown
         match = re.search(r"```(sql)?(.*)```", raw_response, re.DOTALL | re.IGNORECASE)
-        if match:
-            sql_query = match.group(2).strip()
-        else:
-            # Se não houver Markdown, assume que a resposta inteira é a query
-            sql_query = raw_response.strip()
+        sql_query = match.group(2).strip() if match else raw_response.strip()
 
         logging.info(f"Query extraída e limpa: '{sql_query}'")
 
         if not sql_query:
             logging.warning("A IA retornou uma query vazia após a limpeza.")
-            return jsonify(
-                {
-                    "answer": "Desculpe, não consegui formular uma busca com sua pergunta."
-                }
-            )
+            return jsonify({"answer": "Desculpe, não consegui formular uma busca com sua pergunta."})
 
-        if not sql_query.upper().startswith("SELECT"):
-            raise ValueError(
-                f"Query insegura ou mal formada detectada após a limpeza: {sql_query}"
-            )
+        # Desmonta a query em componentes
+        parsed = sqlparse.parse(sql_query)
+        if not parsed:
+            raise ValueError("Query SQL inválida ou vazia após o parse.")
+
+        # Define as palavras-chave perigosas que queremos bloquear
+        FORBIDDEN_KEYWORDS = {
+            'INSERT', 'UPDATE', 'DELETE', 'DROP', 'TRUNCATE', 'ALTER', 'GRANT', 'REVOKE', 'CREATE'
+        }
+
+        # Itera sobre cada token (palavra) da query
+        for token in parsed[0].tokens:
+            # Verifica se o token é uma palavra-chave de manipulação de dados (DML)
+            if token.ttype is sqlparse.tokens.DML and token.value.upper() != 'SELECT':
+                raise ValueError(f"Operação DML insegura detectada: {token.value}")
+            # Verifica se o token é uma palavra-chave de definição de dados (DDL) ou outra palavra perigosa
+            if token.ttype is sqlparse.tokens.DDL or token.value.upper() in FORBIDDEN_KEYWORDS:
+                raise ValueError(f"Operação DDL ou palavra-chave perigosa detectada: {token.value}")
+
+        logging.info("Validação de segurança com sqlparse passou.")
 
         # 5. Executar a Query no Banco de Dados
         logging.info("Executando a query no banco de dados...")
@@ -236,6 +244,11 @@ def chat_handler():
 
         logging.info("Processo concluído com sucesso.")
         return jsonify({"answer": response_final.text.strip()})
+
+    except ValueError as ve:
+        # Captura especificamente nossos erros de validação
+        logging.error(f"Erro de Validação na sessão {session_id}: {ve}")
+        return jsonify({"error": "A pergunta gerou uma consulta que não é permitida por razões de segurança."}), 400
 
     except Exception as e:
         logging.error(f"ERRO CRÍTICO na sessão {session_id}: {e}", exc_info=True)
