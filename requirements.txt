@@ -5,3 +5,4 @@ pg8000==1.30.3
 cloud-sql-python-connector==1.5.0
 gunicorn
 cachetools
+Flask-Cors
