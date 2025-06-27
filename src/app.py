@@ -213,8 +213,11 @@ def chat_handler():
         if not parsed_statements:
             raise ValueError("Query SQL inválida ou vazia após o parse.")
 
+        if len(parsed_statements) > 1:
+            raise ValueError("Múltiplas queries detectadas. Apenas uma query por vez é permitida.")
+
         # Pega a primeira (e deveria ser a única) declaração
-        stmt = parsed_statements
+        stmt = parsed_statements[0]
         
         # Verifica o tipo da declaração. É a validação mais importante!
         statement_type = stmt.get_type()
