@@ -206,10 +206,23 @@ def chat_handler():
             logging.warning("A IA retornou uma query vazia após a limpeza.")
             return jsonify({"answer": "Desculpe, não consegui formular uma busca com sua pergunta."})
 
-        # Desmonta a query em componentes
-        parsed = sqlparse.parse(sql_query)
-        if not parsed:
+        # Desmonta a query em uma ou mais declarações
+        parsed_statements = sqlparse.parse(sql_query)
+        
+        # Garante que temos pelo menos uma declaração para analisar
+        if not parsed_statements:
             raise ValueError("Query SQL inválida ou vazia após o parse.")
+
+        # Pega a primeira (e deveria ser a única) declaração
+        stmt = parsed_statements
+        
+        # Verifica o tipo da declaração. É a validação mais importante!
+        statement_type = stmt.get_type()
+        logging.info(f"Tipo de declaração SQL detectada: {statement_type}")
+
+        if statement_type != 'SELECT':
+            # Isso bloqueia INSERT, UPDATE, DELETE, comentários, texto aleatório, etc.
+            raise ValueError(f"Operação insegura ou inválida detectada. A query gerada não é um SELECT. Tipo detectado: {statement_type}")
 
         # Define as palavras-chave perigosas que queremos bloquear
         FORBIDDEN_KEYWORDS = {
@@ -217,13 +230,9 @@ def chat_handler():
         }
 
         # Itera sobre cada token (palavra) da query
-        for token in parsed[0].tokens:
-            # Verifica se o token é uma palavra-chave de manipulação de dados (DML)
-            if token.ttype is sqlparse.tokens.DML and token.value.upper() != 'SELECT':
-                raise ValueError(f"Operação DML insegura detectada: {token.value}")
-            # Verifica se o token é uma palavra-chave de definição de dados (DDL) ou outra palavra perigosa
-            if token.ttype is sqlparse.tokens.DDL or token.value.upper() in FORBIDDEN_KEYWORDS:
-                raise ValueError(f"Operação DDL ou palavra-chave perigosa detectada: {token.value}")
+        for token in stmt.tokens:
+            if token.value.upper() in FORBIDDEN_KEYWORDS:
+                raise ValueError(f"Palavra-chave perigosa '{token.value}' detectada dentro do SELECT.")
 
         logging.info("Validação de segurança com sqlparse passou.")
 
