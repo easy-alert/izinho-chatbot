@@ -91,6 +91,11 @@ Você é um assistente de banco de dados expert em PostgreSQL.
 Sua tarefa é gerar uma query SQL a partir da pergunta de um usuário, seguindo regras estritas.
 Gere APENAS a query SQL, sem nenhuma palavra ou explicação.
 
+---
+HISTÓRICO DA CONVERSA:
+{chat_history}
+---
+
 Contexto e Regras:
 1.  **Regra de Sintaxe PostgreSQL CRÍTICA**: Todos os nomes de tabelas e colunas que contêm letras maiúsculas (camelCase) DEVEM ser colocados entre aspas duplas. Exemplo: `"companyId"`.
 2.  **Esquema do Banco de Dados**: {db_schema}
@@ -99,7 +104,7 @@ Contexto e Regras:
 4.  **Regra de Segurança**: As queries DEVEM ser filtradas pelo `companyId` ou  `userId` fornecido para garantir que o usuário só veja dados da sua empresa ou relacionado a ele. Use sempre a cláusula `WHERE "companyId" = '{company_id}'` ou `WHERE "userId" = '{user_id}'`.
 5.  **Exemplo de Query Correta**: `SELECT COUNT(*) FROM buildings WHERE buildings."companyId" = 'some-company-id';`
 
-Pergunta do Usuário: "{question}"
+Pergunta MAIS RECENTE do Usuário: "{question}"
 ID da Empresa para o filtro: '{company_id}'
 ID do Usuário para o filtro: '{user_id}'
 
@@ -153,34 +158,34 @@ def health_check():
 @app.route("/chat", methods=["POST"])
 def chat_handler():
     data = request.get_json()
-    if (
-        not data
-        or "question" not in data
-        or "user_id" not in data
-        or "company_id" not in data
-    ):
-        return jsonify(
-            {
-                "error": "Parâmetros 'question', 'user_id' e 'company_id' são obrigatórios."
-            }
-        ), 400
+
+    if not all(k in data for k in ["question", "user_id", "company_id"]):
+         return jsonify({"error": "Parâmetros obrigatórios ausentes."}), 400
 
     user_question = data["question"]
     user_id = data["user_id"]
     company_id = data["company_id"]
+    history = data.get("history", []) 
+    session_id = data.get("session_id", "no-session")
 
     try:
-        logging.info("Iniciando o manipulador de chat.")
+        logging.info(f"Iniciando chat para sessão: {session_id}")
 
         # 1. Pega o schema do banco (do cache ou buscando novamente)
         db_schema = get_dynamic_schema()
 
-        # 2. Formata o prompt SQL com o schema dinâmico
+        # 2. Construa a string do histórico da conversa
+        chat_history_str = ""
+        for message in history:
+            sender = "Usuário" if message.get("sender") == "user" else "Assistente"
+            chat_history_str += f"{sender}: {message.get('text')}\n"
+
+        # 3. Formate o prompt com o histórico
         prompt_sql = PROMPT_TEMPLATE_SQL.format(
-            db_schema=db_schema,  # <-- Injeta o schema aqui
+            chat_history=chat_history_str,
+            db_schema=db_schema,
             company_id=company_id,
-            user_id=user_id,
-            question=user_question,
+            question=user_question
         )
 
         logging.debug("Prompt SQL formatado. Chamando a IA para gerar a query...")
@@ -189,7 +194,7 @@ def chat_handler():
         raw_response = response_sql.text
         logging.info(f"Resposta bruta da IA: '{raw_response}'")
 
-        # 3. Tenta extrair a query de dentro de um bloco de código Markdown
+        # 4. Tenta extrair a query de dentro de um bloco de código Markdown
         match = re.search(r"```(sql)?(.*)```", raw_response, re.DOTALL | re.IGNORECASE)
         if match:
             sql_query = match.group(2).strip()
@@ -212,7 +217,7 @@ def chat_handler():
                 f"Query insegura ou mal formada detectada após a limpeza: {sql_query}"
             )
 
-        # 4. Executar a Query no Banco de Dados
+        # 5. Executar a Query no Banco de Dados
         logging.info("Executando a query no banco de dados...")
 
         with db_pool.connect() as conn:
@@ -221,7 +226,7 @@ def chat_handler():
 
         logging.debug(f"Resultado do banco de dados: {db_result}")
 
-        # 5. Gerar a Resposta Final com a IA
+        # 6. Gerar a Resposta Final com a IA
         logging.info("Chamando a IA para formatar a resposta final...")
         prompt_response = PROMPT_TEMPLATE_RESPONSE.format(
             question=user_question, db_result=str(db_result)
@@ -232,13 +237,8 @@ def chat_handler():
         return jsonify({"answer": response_final.text.strip()})
 
     except Exception as e:
-        logging.error(f"ERRO CRÍTICO no manipulador de chat: {e}", exc_info=True)
-
-        return jsonify(
-            {
-                "error": "Desculpe, não consegui processar sua pergunta. Tente reformulá-la."
-            }
-        ), 500
+        logging.error(f"ERRO CRÍTICO na sessão {session_id}: {e}", exc_info=True)
+        return jsonify({"error": "Desculpe, não consegui processar sua pergunta."}), 500
 
 
 if __name__ == "__main__":
