@@ -185,6 +185,7 @@ def chat_handler():
             chat_history=chat_history_str,
             db_schema=db_schema,
             company_id=company_id,
+            user_id=user_id,
             question=user_question
         )
 
