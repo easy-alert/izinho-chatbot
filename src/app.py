@@ -4,12 +4,14 @@ import re
 import sqlalchemy
 import vertexai
 from flask import Flask, request, jsonify
+from flask_cors import CORS
 from google.cloud.sql.connector import Connector
 from vertexai.generative_models import GenerativeModel, Part
 from cachetools import cached, TTLCache
 
 # --- CONFIGURAÇÃO LIDA DO AMBIENTE ---
 app = Flask(__name__)
+CORS(app)  # Habilita CORS para permitir requisições de outros domínios
 
 # --- CONFIGURAÇÃO DE LOGGING ---
 # Configura o logger para imprimir no console. Cloud Run irá capturar isso.
