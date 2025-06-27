@@ -3,6 +3,7 @@ import logging
 import re
 import sqlalchemy
 import vertexai
+import sqlparse
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from google.cloud.sql.connector import Connector
