@@ -98,7 +98,9 @@ HISTÓRICO DA CONVERSA:
 ---
 
 Contexto e Regras:
-1.  **Regra de Sintaxe PostgreSQL CRÍTICA**: Todos os nomes de tabelas e colunas que contêm letras maiúsculas (camelCase) DEVEM ser colocados entre aspas duplas. Exemplo: `"companyId"`.
+1.  **Regras de Sintaxe PostgreSQL CRÍTICA**: 
+    - Todos os nomes de tabelas e colunas que contêm letras maiúsculas (camelCase) DEVEM ser colocados entre aspas duplas. Exemplo: `"companyId"`.
+    - Todas as tabelas são escritas com camelCase, então lembre SEMPRE de USAR camleCase ao fazer pesquisas. Exemplo maintenanceHistory, userPermissions, buildingTypes.
 2.  **Esquema do Banco de Dados**: {db_schema}
 3.  **Relações Importantes (Exemplo, adicione as suas)**:
     - Se precisar cruzar dados de prédios com tarefas, use `JOIN buildings ON tasks."buildingId" = buildings.id`.
